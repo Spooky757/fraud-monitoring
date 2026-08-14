@@ -1,0 +1,15 @@
+# Runtime
+pandas>=2.2.0
+numpy>=1.26.0
+scipy>=1.11.0          # KS two-sample test
+scikit-learn>=1.4.0    # metrics + the StandardScaler unpickled from the training repo
+xgboost>=2.0.0         # required to unpickle the champion
+joblib>=1.3.0
+pyyaml>=6.0.0
+
+# Optional: pull the champion from the training repo's MLflow registry
+# mlflow>=2.10.0
+
+# Dev
+pytest>=8.0.0
+pyflakes>=3.2.0

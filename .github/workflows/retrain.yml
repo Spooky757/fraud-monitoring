@@ -1,0 +1,178 @@
+name: Retrain
+
+# Builds a challenger and puts it through the promotion gate. Runs on three paths:
+#   1. schedule  — a monthly floor, so the model never goes stale in silence even if
+#                  drift detection never fires
+#   2. call      — invoked by monitor.yml on a confirmed RETRAIN decision
+#   3. dispatch  — a human deciding to retrain now
+#
+# What it never does: promote. The gate produces a verdict and a PR; a person merges.
+on:
+  schedule:
+    - cron: "0 3 1 * *"           # 03:00 UTC on the 1st of each month
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why are we retraining?"
+        required: false
+        default: "Manual retrain"
+  workflow_call:
+    inputs:
+      reason:
+        required: false
+        type: string
+        default: "Automated retrain"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: retrain
+  cancel-in-progress: false       # never leave a half-trained challenger behind
+
+jobs:
+  challenger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      FRAUD_MONITORING_ENV: prod
+      PYTHONPATH: src
+    outputs:
+      promote: ${{ steps.gate.outputs.promote }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Fetch champion artifacts
+        env:
+          GH_TOKEN: ${{ secrets.TRAINING_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p artifacts/champion
+          gh release download --repo "${{ vars.TRAINING_REPO || 'Koneko1625/Credit-Card-Fraud-testing' }}" \
+            --pattern 'model.pkl' --pattern 'scaler.pkl' --pattern 'threshold.json' \
+            --dir artifacts/champion --clobber || echo "::warning::using committed champion artifacts"
+
+      # Replace with your real history source. The point is that the challenger
+      # trains on a *rolling recent window* and both models are judged on a shared,
+      # never-trained-on holdout of the most recent data.
+      - name: Assemble training window and holdout
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          from fraud_monitoring.retrain import build_training_window
+          from fraud_monitoring.simulate import make_synthetic_dataset
+
+          source = Path("data/history.csv")
+          history = pd.read_csv(source) if source.exists() else make_synthetic_dataset(120_000, 0.0017)
+          train, holdout = build_training_window(history, rolling_window_days=180, holdout_days=30)
+          Path("data/retrain").mkdir(parents=True, exist_ok=True)
+          train.to_csv("data/retrain/train.csv", index=False)
+          holdout.to_csv("data/retrain/holdout.csv", index=False)
+          print(f"train={len(train)} holdout={len(holdout)}")
+          PY
+
+      # The challenger is built by the *training repo's* pipeline, at a pinned ref.
+      # Reimplementing training here would mean comparing two different models built
+      # two different ways — the comparison would be meaningless.
+      - name: Train challenger via the training pipeline
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ vars.TRAINING_REF || 'main' }}" \
+            "https://github.com/${{ vars.TRAINING_REPO || 'Koneko1625/Credit-Card-Fraud-testing' }}.git" \
+            .retrain-workdir/training-repo
+          cd .retrain-workdir/training-repo
+          pip install -r requirements.txt
+          mkdir -p data/raw
+          cp ../../data/retrain/train.csv data/raw/creditcard.csv
+          PYTHONPATH=. python -m src.fraud_pipeline.pipeline
+          cd ../..
+          mkdir -p artifacts/challenger
+          cp .retrain-workdir/training-repo/models/model.pkl \
+             .retrain-workdir/training-repo/models/scaler.pkl \
+             .retrain-workdir/training-repo/models/threshold.json artifacts/challenger/
+          git -C .retrain-workdir/training-repo rev-parse --short HEAD > artifacts/challenger/VERSION
+
+      - name: Promotion gate
+        id: gate
+        continue-on-error: true       # a REJECT is a valid outcome, not a broken build
+        run: |
+          python -m fraud_monitoring.cli gate \
+            --challenger-dir artifacts/challenger \
+            --holdout data/retrain/holdout.csv
+
+      - name: Upload challenger and gate record
+        uses: actions/upload-artifact@v4
+        with:
+          name: challenger-${{ github.run_id }}
+          path: |
+            artifacts/challenger/
+            monitoring/reports/promotions/
+          retention-days: 180
+
+      # A pass opens a PR. Merging it is the deploy — reviewed, reversible, and
+      # attributable, which is what you want standing between a model and money.
+      - name: Open promotion PR
+        if: steps.gate.outputs.promote == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH="promote/challenger-${{ github.run_id }}"
+          git config user.name  "fraud-monitoring[bot]"
+          git config user.email "fraud-monitoring@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          cp artifacts/challenger/threshold.json artifacts/champion/threshold.json
+          cp artifacts/challenger/VERSION artifacts/champion/VERSION
+          git add artifacts/champion monitoring/reports/promotions
+          git commit -m "promote challenger $(cat artifacts/challenger/VERSION)"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "Promote challenger $(cat artifacts/challenger/VERSION)" \
+            --body "$(cat <<EOF
+          Automated promotion candidate. Reason: ${{ inputs.reason || 'scheduled retrain' }}
+
+          The challenger passed every gate check against the shared 30-day holdout.
+          See the \`challenger-${{ github.run_id }}\` workflow artifact for the full
+          promotion record (per-check values, both models' metrics).
+
+          **Before merging:**
+          - [ ] Review the gate record — especially recall at the operating threshold
+          - [ ] Confirm the model.pkl / scaler.pkl in the training repo release match this VERSION
+          - [ ] Rebuild the reference profile after merge: \`make reference\`
+          EOF
+          )" \
+            --label model-promotion
+
+      - name: Report rejection
+        if: steps.gate.outputs.promote != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `Challenger rejected — run ${context.runId}`,
+              body: [
+                'A challenger was trained but did **not** pass the promotion gate. The champion stays live.',
+                '',
+                `Reason for retraining: ${{ toJSON(inputs.reason) }}`,
+                '',
+                'Check the job summary for the per-check breakdown. Common causes:',
+                '- not enough new fraud examples in the rolling window',
+                '- the drift is concept drift the current feature set cannot express',
+                '- recall regressed at the operating threshold even though PR-AUC improved',
+                '',
+                `[Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              ].join('\n'),
+              labels: ['model-monitoring', 'automated'],
+            });

@@ -1,0 +1,171 @@
+name: Monitor
+
+# The scheduled heartbeat of the system. Runs whether or not anyone remembers to
+# look, which is the entire point — a monitoring job that a human has to launch is
+# not monitoring.
+on:
+  schedule:
+    - cron: "0 2 * * *"          # 02:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "Path to the batch CSV to score (relative to repo root)"
+        required: false
+        default: ""
+      environment:
+        description: "Config overlay"
+        required: false
+        default: "prod"
+        type: choice
+        options: [dev, staging, prod]
+
+permissions:
+  contents: write        # commit the updated state file and report
+  issues: write          # zero-infra alerting
+
+concurrency:
+  group: monitor-${{ github.ref }}
+  cancel-in-progress: false      # never cancel a half-written state file
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    env:
+      FRAUD_MONITORING_ENV: ${{ inputs.environment || 'prod' }}
+    outputs:
+      action: ${{ steps.run.outputs.action }}
+      severity: ${{ steps.run.outputs.severity }}
+      batch_id: ${{ steps.run.outputs.batch_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      # The champion is produced by the training repo. Pulling it from a release
+      # asset keeps large binaries out of git while pinning exactly which model is
+      # being monitored.
+      - name: Fetch champion artifacts
+        env:
+          GH_TOKEN: ${{ secrets.TRAINING_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/champion
+          if gh release download --repo "${{ vars.TRAINING_REPO || 'Koneko1625/Credit-Card-Fraud-testing' }}" \
+               --pattern 'model.pkl' --pattern 'scaler.pkl' --pattern 'threshold.json' \
+               --dir artifacts/champion --clobber 2>/dev/null; then
+            echo "Champion downloaded from the training repo's latest release."
+          else
+            echo "::warning::No release assets found — falling back to committed artifacts."
+          fi
+          ls -la artifacts/champion
+
+      # Replace this step with however batches actually reach you: a warehouse
+      # export, an S3 sync, a scheduled query. The simulator keeps the workflow
+      # runnable end-to-end before that plumbing exists.
+      - name: Resolve batch
+        id: batch
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.batch }}" ]; then
+            echo "path=${{ inputs.batch }}" >> "$GITHUB_OUTPUT"
+          elif ls data/incoming/*.csv >/dev/null 2>&1; then
+            echo "path=$(ls -t data/incoming/*.csv | head -1)" >> "$GITHUB_OUTPUT"
+          else
+            python -m fraud_monitoring.cli simulate \
+              --out "data/incoming/$(date -u +%Y-%m-%d).csv" --rows 20000
+            echo "path=data/incoming/$(date -u +%Y-%m-%d).csv" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          PYTHONPATH: src
+
+      - name: Run monitoring window
+        id: run
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m fraud_monitoring.cli monitor \
+            --batch "${{ steps.batch.outputs.path }}" \
+            --batch-id "$(date -u +%Y-%m-%dT%H%M)"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-report-${{ steps.run.outputs.batch_id }}
+          path: monitoring/reports/
+          retention-days: 90
+
+      # The state file is the monitor's memory — the confirmation streak and the
+      # last-retrain timestamp. Committing it is what makes "two consecutive
+      # windows" mean anything across separate workflow runs.
+      - name: Persist monitoring state
+        if: success()
+        run: |
+          git config user.name  "fraud-monitoring[bot]"
+          git config user.email "fraud-monitoring@users.noreply.github.com"
+          git add monitoring/state monitoring/reports
+          git diff --staged --quiet || git commit -m "monitor: ${{ steps.run.outputs.action }} for batch ${{ steps.run.outputs.batch_id }}"
+          git push
+
+      - name: Open or update alert issue
+        if: steps.run.outputs.action == 'RETRAIN' || steps.run.outputs.action == 'HALT' || steps.run.outputs.action == 'RECALIBRATE_THRESHOLD'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const action = '${{ steps.run.outputs.action }}';
+            const batchId = '${{ steps.run.outputs.batch_id }}';
+            const report = JSON.parse(fs.readFileSync('${{ steps.run.outputs.report_path }}', 'utf8'));
+            const reasons = (report.decision.reasons || []).map(r => `- ${r}`).join('\n');
+            const title = `[${action}] Model monitoring alert — ${batchId}`;
+            const body = [
+              `**Decision:** \`${action}\``,
+              `**Model version:** \`${report.model_version}\``,
+              `**Rows scored:** ${report.n_rows}`,
+              `**Features alerting:** ${report.drift.n_features_alert}/${report.drift.n_features_tested}`,
+              `**Confirmation streak:** ${report.decision.confirmed_streak}`,
+              '',
+              '### Why', reasons || '_no reasons recorded_',
+              '',
+              `[Full report artifact](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              '',
+              action === 'RETRAIN'
+                ? '➡️ Run the **Retrain** workflow to build and gate a challenger. Nothing is promoted automatically.'
+                : action === 'RECALIBRATE_THRESHOLD'
+                ? '➡️ Run `fraud_monitoring.cli recalibrate` on a recent labelled window and review the proposed threshold.'
+                : '➡️ Data quality failure — investigate the upstream batch before trusting any score from it.'
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'model-monitoring',
+            });
+            const open = existing.data.find(i => i.title.startsWith(`[${action}]`));
+            if (open) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: open.number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['model-monitoring', 'automated'],
+              });
+            }
+
+  # A RETRAIN decision hands off to the retrain workflow, which builds a challenger
+  # and gates it. Promotion still requires a human to merge the resulting PR.
+  trigger-retrain:
+    needs: monitor
+    if: needs.monitor.outputs.action == 'RETRAIN'
+    uses: ./.github/workflows/retrain.yml
+    secrets: inherit
+    with:
+      reason: "Triggered by monitoring batch ${{ needs.monitor.outputs.batch_id }}"

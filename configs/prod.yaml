@@ -1,0 +1,17 @@
+# Prod overlay — conservative. Nothing here trades safety for speed.
+drift:
+  min_batch_rows: 5000
+performance:
+  min_labeled_rows: 20000
+  min_labeled_frauds: 50
+decision:
+  consecutive_windows_to_confirm: 3   # three strikes before a retrain is triggered
+  cooldown_days: 14
+retraining:
+  gate:
+    min_pr_auc_improvement: 0.01
+    max_recall_regression: 0.01
+    min_precision: 0.60
+alerting:
+  github_issue: true
+  fail_workflow_on_alert: false

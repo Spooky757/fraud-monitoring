@@ -1,0 +1,104 @@
+# fraud-monitoring — single source of truth for every threshold and path.
+# Nothing in src/ hardcodes a number; if you want to tune sensitivity, tune it here.
+
+environment: "dev"          # dev | staging | prod (overlaid by configs/<env>.yaml)
+
+model:
+  # Where the champion artifacts produced by the training repo land.
+  # model.pkl / scaler.pkl / threshold.json — the contract from
+  # fraud_pipeline.inference.save_inference_artifacts().
+  artifacts_dir: "artifacts/champion"
+  # Optional: pull the champion straight from the training repo's MLflow registry
+  # instead of a directory. Leave enabled: false to use artifacts_dir.
+  registry:
+    enabled: false
+    tracking_uri: "sqlite:///mlflow.db"
+    registered_model_name: "fraud-detector"
+    champion_alias: "champion"
+
+data:
+  incoming_dir: "data/incoming"       # scored/unscored batches arrive here as CSV/parquet
+  archive_dir: "data/archive"
+  label_column: "Class"
+  time_column: "Time"
+  # Features the model consumes, in training order. Amount is scaled at inference.
+  feature_columns:
+    ["Time", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10",
+     "V11", "V12", "V13", "V14", "V15", "V16", "V17", "V18", "V19", "V20",
+     "V21", "V22", "V23", "V24", "V25", "V26", "V27", "V28", "Amount"]
+  # Monitored for drift. "Time" is deliberately excluded: it is seconds-since-first-
+  # transaction, so it is guaranteed to "drift" on every new batch by construction and
+  # would drown out real signal. See DESIGN.md -> "The Time feature problem".
+  drift_exclude: ["Time"]
+
+paths:
+  reference_profile: "monitoring/reference/reference_profile.json"
+  reports_dir: "monitoring/reports"
+  state_file: "monitoring/state/monitor_state.json"
+
+drift:
+  min_batch_rows: 1000            # below this, drift stats are noise — report SKIPPED
+  psi:
+    bins: 10                      # quantile bins cut from the reference distribution
+    warn: 0.10                    # industry convention: <0.1 stable, 0.1-0.25 moderate
+    alert: 0.25                   #                      >0.25 significant shift
+  ks:
+    alpha: 0.01
+    correction: "bonferroni"      # bonferroni | none — 29 simultaneous tests need it
+  # A single twitchy feature is not dataset drift. Escalate on breadth.
+  dataset:
+    drifted_fraction_warn: 0.10   # >=10% of monitored features alerting -> WARN
+    drifted_fraction_alert: 0.25  # >=25% -> ALERT
+  prediction:
+    score_psi_warn: 0.10
+    score_psi_alert: 0.20
+    # Flag rate = share of the batch scored above the operating threshold. This is the
+    # earliest available health signal — it needs no labels at all.
+    flag_rate_rel_warn: 0.50      # +/-50% relative to reference flag rate
+    flag_rate_rel_alert: 1.00     # +/-100%
+
+performance:
+  # Fraud labels arrive on chargeback lag, so performance monitoring always trails
+  # drift monitoring. Batches younger than this are scored but not graded.
+  label_delay_days: 30
+  min_labeled_rows: 5000
+  min_labeled_frauds: 30          # below this, precision/recall CIs are uselessly wide
+  # Filled in by `build-reference` from the champion's promotion-time eval.
+  baseline:
+    pr_auc: null
+    recall: null
+    precision: null
+  degradation:
+    pr_auc_rel_warn: 0.05         # 5% relative drop in PR-AUC
+    pr_auc_rel_alert: 0.15
+    recall_abs_warn: 0.05         # absolute recall points lost at operating threshold
+    recall_abs_alert: 0.10
+    precision_abs_alert: 0.15     # precision collapse = analyst queue flooded
+
+decision:
+  # One bad window is noise; two in a row is a trend. Prevents alert flapping.
+  consecutive_windows_to_confirm: 2
+  cooldown_days: 7                # minimum gap between automated retrain triggers
+  # Cheapest remedy first: if only the score distribution moved but ranking quality
+  # (PR-AUC) held up, recalibrate the threshold instead of retraining.
+  prefer_recalibration: true
+
+retraining:
+  training_repo: "https://github.com/Koneko1625/Credit-Card-Fraud-testing.git"
+  training_ref: "main"
+  schedule_cron: "0 3 1 * *"      # monthly floor, independent of drift triggers
+  rolling_window_days: 180        # challenger trains on the most recent N days only
+  min_training_rows: 50000
+  min_training_frauds: 100
+  gate:
+    # A challenger ships only if it is measurably better and regresses nothing.
+    min_pr_auc_improvement: 0.005
+    max_recall_regression: 0.02
+    min_precision: 0.50
+    require_clean_validation: true
+    holdout_days: 30              # most recent N days, unseen by both models
+
+alerting:
+  github_issue: true              # zero-infra alerting: open/update an issue
+  issue_labels: ["model-monitoring", "automated"]
+  fail_workflow_on_alert: false   # keep the schedule green; the issue is the signal

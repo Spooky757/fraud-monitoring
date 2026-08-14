@@ -1,0 +1,11 @@
+# Dev overlay — loud and fast, so you can see the machinery work on small batches.
+drift:
+  min_batch_rows: 500
+performance:
+  min_labeled_rows: 2000
+  min_labeled_frauds: 10
+decision:
+  consecutive_windows_to_confirm: 2
+  cooldown_days: 0
+alerting:
+  github_issue: false

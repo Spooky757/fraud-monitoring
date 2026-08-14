@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Lint
+        run: python -m pyflakes src/ tests/
+
+      - name: Test
+        env:
+          PYTHONPATH: src
+        run: pytest tests/ -v --junitxml=test-results-${{ matrix.python-version }}.xml
+
+      # A monitoring repo whose own CLI is broken is worse than none: it fails
+      # silently and everyone assumes the model is fine. So CI drives the real
+      # end-to-end path, not just the unit tests.
+      - name: Smoke test the CLI
+        if: matrix.python-version == '3.11'
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python -m fraud_monitoring.cli --env dev simulate --out /tmp/clean.csv --rows 8000
+          python -m fraud_monitoring.cli --env dev simulate --out /tmp/drifted.csv --rows 8000 \
+            --kind covariate --magnitude 1.5
+          test -s /tmp/clean.csv && test -s /tmp/drifted.csv
+          echo "CLI smoke test passed"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: test-results-*.xml

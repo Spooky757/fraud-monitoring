@@ -1,0 +1,9 @@
+# Staging overlay — production thresholds, but nothing is ever promoted from here.
+decision:
+  cooldown_days: 3
+retraining:
+  gate:
+    min_pr_auc_improvement: 0.0     # staging exercises the path, it does not gate on quality
+alerting:
+  github_issue: true
+  fail_workflow_on_alert: true      # a broken monitor should fail loudly in staging

@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Data and models never go in git — only the profile and the reports do.
+data/incoming/*
+data/archive/*
+!data/**/.gitkeep
+artifacts/champion/*.pkl
+artifacts/challenger/
+artifacts/proposed/
+mlruns/
+mlflow.db
+.retrain-workdir/
