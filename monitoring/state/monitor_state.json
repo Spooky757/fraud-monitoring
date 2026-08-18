@@ -1,0 +1,13 @@
+{
+  "streak": 0,
+  "last_action": "NO_ACTION",
+  "last_retrain_at": null,
+  "history": [
+    {
+      "at": "2026-08-18T17:01:34.215764+00:00",
+      "action": "NO_ACTION",
+      "severity": "OK",
+      "streak": 0
+    }
+  ]
+}
