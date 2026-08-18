@@ -22,6 +22,7 @@ on:
 permissions:
   contents: write        # commit the updated state file and report
   issues: write          # zero-infra alerting
+  pull-requests: write
 
 concurrency:
   group: monitor-${{ github.ref }}

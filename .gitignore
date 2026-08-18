@@ -8,7 +8,7 @@ __pycache__/
 data/incoming/*
 data/archive/*
 !data/**/.gitkeep
-artifacts/champion/*.pkl
+#artifacts/champion/*.pkl
 artifacts/challenger/
 artifacts/proposed/
 mlruns/
