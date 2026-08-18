@@ -58,7 +58,7 @@ jobs:
           GH_TOKEN: ${{ secrets.TRAINING_REPO_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p artifacts/champion
-          gh release download --repo "${{ vars.TRAINING_REPO || 'Koneko1625/Credit-Card-Fraud-testing' }}" \
+          gh release download --repo "${{ vars.TRAINING_REPO || 'Spooky757/Credit-Card-Fraud-testing' }}" \
             --pattern 'model.pkl' --pattern 'scaler.pkl' --pattern 'threshold.json' \
             --dir artifacts/champion --clobber || echo "::warning::using committed champion artifacts"
 
