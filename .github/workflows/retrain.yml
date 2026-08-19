@@ -58,7 +58,7 @@ jobs:
           GH_TOKEN: ${{ secrets.TRAINING_REPO_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p artifacts/champion
-          gh release download --repo "${{ vars.TRAINING_REPO || 'Spooky757/Credit-Card-Fraud-testing' }}" \
+          gh release download --repo "${{ vars.TRAINING_REPO || 'Koneko1625/Credit-Card-Fraud-testing' }}" \
             --pattern 'model.pkl' --pattern 'scaler.pkl' --pattern 'threshold.json' \
             --dir artifacts/champion --clobber || echo "::warning::using committed champion artifacts"
 
@@ -74,7 +74,14 @@ jobs:
           from fraud_monitoring.simulate import make_synthetic_dataset
 
           source = Path("data/history.csv")
-          history = pd.read_csv(source) if source.exists() else make_synthetic_dataset(120_000, 0.0017)
+          if source.exists():
+              history = pd.read_csv(source)
+          else:
+              # Synthetic data spans 2 days by default; stretch to 240 days so the
+              # 30-day holdout and 180-day rolling window both have enough room.
+              import numpy as np
+              history = make_synthetic_dataset(120_000, 0.0017)
+              history["Time"] = np.linspace(0, 240 * 86_400, len(history))
           train, holdout = build_training_window(history, rolling_window_days=180, holdout_days=30)
           Path("data/retrain").mkdir(parents=True, exist_ok=True)
           train.to_csv("data/retrain/train.csv", index=False)
