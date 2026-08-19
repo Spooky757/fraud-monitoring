@@ -235,31 +235,3 @@ touches the live threshold — promotion stays a reviewed change. With
 floor, which is usually what a fraud team wants: the recall floor is a risk
 commitment, and precision is what you buy back.
 
-## Tests
-
-```bash
-make test    # pytest, 58 tests
-make lint    # pyflakes
-```
-
-The suite deliberately targets the things that are expensive to get wrong:
-
-- PSI is zero on identical distributions, near-zero on honest resamples, and
-  monotonic in the size of the shift
-- Score PSI does **not** false-alarm on a resample of the same population
-  (see DESIGN.md §3 — this was a real bug, caught by this test)
-- Every branch of the escalation ladder: confirmation, streak reset, cooldown,
-  recalibrate-vs-retrain, and `HALT` short-circuiting
-- The promotion gate rejects a challenger that wins on PR-AUC but loses recall at the
-  operating threshold
-- End-to-end: a real XGBoost model, a healthy batch that stays quiet, and injected
-  drift that escalates
-
-## Known limitations
-
-Summarised here, argued properly in [DESIGN.md §6](DESIGN.md#6-known-limitations):
-the label feedback loop biases every retraining generation; `Time` should be dropped
-as a model feature upstream rather than merely excluded from drift here; PCA features
-make root-cause analysis impossible by construction; and the thresholds shipped in
-`configs/prod.yaml` are defensible defaults that should be re-tuned by replaying real
-historical batches before they are trusted.
