@@ -4,12 +4,7 @@ Drift detection, performance monitoring, and retraining policy for the credit-ca
 fraud model built by
 [Credit-Card-Fraud-testing](https://github.com/Koneko1625/Credit-Card-Fraud-testing).
 
-That repo answers *"can we build a model?"*. This one answers *"is it still working,
-and what do we do when it isn't?"* — on a schedule, without anyone remembering to
-check.
-
-**[DESIGN.md](DESIGN.md) explains the reasoning behind every threshold and rule here.**
-This file is how to run it.
+This repo is regards to the monitoring and retraining of the model
 
 ---
 
