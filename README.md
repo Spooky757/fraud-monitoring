@@ -4,6 +4,9 @@ Drift detection, performance monitoring, and retraining policy for the credit-ca
 fraud model built by
 [Credit-Card-Fraud-testing](https://github.com/Koneko1625/Credit-Card-Fraud-testing).
 
+Fraud model is forked to https://github.com/Spooky757/Credit-Card-Fraud-testing and 
+added release.yml into its workflow.
+
 This repo is regards to the monitoring and retraining of the model
 
 ---
@@ -39,7 +42,7 @@ flowchart TB
     PR -.->|new champion| C
 ```
 
-Two independent detection layers, because they catch different failures:
+Two detection layers for whether we have the fraud labels or not
 
 - **Unsupervised** (every batch, no labels): per-feature PSI + KS against a frozen
   reference profile, plus score-distribution PSI and flag rate. Catches covariate,
@@ -59,7 +62,7 @@ NO_ACTION → WATCH → RECALIBRATE_THRESHOLD → RETRAIN
 
 ## See it work in 60 seconds
 
-No Kaggle download needed — this trains a stand-in champion on synthetic data and
+This demo trains a stand-in champion on synthetic data and
 walks a healthy batch, a drifted batch, and a concept-drift batch through the loop.
 
 ```bash
@@ -73,21 +76,21 @@ batch         PSI feats  max PSI   recall    decision                note
 healthy-1     0/29       0.001     0.900     WATCH                   same population
 healthy-2     0/29       0.002     0.930     NO_ACTION               still healthy
 covariate-1   8/29       1.276     0.950     WATCH                   8 features shifted
-covariate-2   8/29       1.266     0.980     RECALIBRATE_THRESHOLD   confirmed — cheap fix first
+covariate-2   8/29       1.266     0.980     RECALIBRATE_THRESHOLD   confirmed — recalibrate threshold
 concept-1     0/29       0.001     0.270     RETRAIN                 inputs normal, labels rewired
 concept-2     0/29       0.001     0.290     RETRAIN                 confirmed concept drift
 ```
 
-Read that table row by row and the whole design is visible:
+The table shows the design concepts of the model:
 
-- The **first** alerting window never acts — it goes to `WATCH` pending confirmation.
+- When the system is **first** alerted the system doesnt act first. It goes to `WATCH`
+  pending confirmation and streak number goes up +1.
 - **Covariate drift** lights up 8 of 29 features but PR-AUC holds, so the system
   recalibrates the threshold instead of burning hours on a retrain.
 - **Concept drift** shows `0/29` features drifting and recall collapsing from 0.98 to
-  0.27. Every unsupervised detector is blind to it. This is why the supervised layer
-  exists, and why label lag is the hardest constraint in the whole design.
+  0.27.
 
-Then open `monitoring/reports/covariate-2.html` — a self-contained report with no CDN
+Refer to `monitoring/reports/covariate-2.html` — a self-contained report with no CDN
 calls, so it opens from a downloaded workflow artifact on a laptop with no network.
 
 ---
@@ -103,8 +106,7 @@ cp ../Credit-Card-Fraud-testing/models/{model.pkl,scaler.pkl,threshold.json} art
 echo "v1.0.0" > artifacts/champion/VERSION
 ```
 
-In CI the workflows pull these from the training repo's **release assets** instead,
-which keeps binaries out of git and pins exactly which model is being watched. Set
+In CI the workflows pull these from the training repo's **release assets** workflow instead. Set
 the repo variable `TRAINING_REPO` if yours differs from the default.
 
 ### 2. Freeze the reference profile
@@ -113,7 +115,7 @@ the repo variable `TRAINING_REPO` if yours differs from the default.
 make reference   # or: python -m fraud_monitoring.cli build-reference --training-data data/raw/creditcard.csv
 ```
 
-This is the step people forget. The profile records the distribution the champion was
+This reference profile records the distribution the champion was
 *trained on* — bin edges, expected mass per bin, and the promotion-time baseline
 metrics. Drift is measured against it forever after.
 
@@ -123,12 +125,14 @@ metrics. Drift is measured against it forever after.
 
 ### 3. Monitor a batch
 
+Go to the action tab and run the "monitor.yml" workflow or use the code
+
 ```bash
 make monitor BATCH=data/incoming/2026-08-14.csv ENV=prod
 ```
 
-Writes a JSON report (machine-readable), an HTML report (human-readable), updates the
-state file, and prints a Markdown summary that becomes the GitHub Actions job summary.
+This writes a JSON report (machine-readable), an HTML report (human-readable), updates the
+state file, and prints a Markdown summary for the monitoring.
 
 ### 4. Let CI do it
 
@@ -146,7 +150,7 @@ the state file holds the confirmation streak, and it is the only thing that make
 
 ## Wiring the two repos together
 
-The entire coupling is three files. Nothing else is shared.
+The files required for compatibility between the repos is three files.
 
 | Artifact | Written by | Read by |
 |---|---|---|
@@ -170,9 +174,9 @@ loads and applies it, and enforces column order explicitly when scoring.
 
 ## Environments
 
-Environments are **config overlays**, not branches. `configs/monitoring.yaml` holds
-every default; `configs/{dev,staging,prod}.yaml` override subsets, selected by
-`FRAUD_MONITORING_ENV` or `--env`.
+`configs/monitoring.yaml` holds the default configuration.
+`configs/{dev,staging,prod}.yaml` override subsets, selected by
+`FRAUD_MONITORING_ENV` or `--env`. The run is overlayed with dev.yml.
 
 | | dev | staging | prod |
 |---|---|---|---|
