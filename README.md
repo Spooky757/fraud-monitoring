@@ -2,9 +2,9 @@
 
 Drift detection, performance monitoring, and retraining policy for the credit-card
 fraud model built by
-[Credit-Card-Fraud-testing](https://github.com/Koneko1625/Credit-Card-Fraud-testing).
+[Ananya's Credit-Card-Fraud-testing](https://github.com/Koneko1625/Credit-Card-Fraud-testing).
 
-Fraud model is forked to https://github.com/Spooky757/Credit-Card-Fraud-testing and 
+Fraud model is forked to [Fong Fang Te's Credit-Card-Fraud-testing](https://github.com/Spooky757/Credit-Card-Fraud-testing) and 
 added release.yml into its workflow.
 
 This repo is regards to the monitoring and retraining of the model
