@@ -4,12 +4,6 @@
   "last_retrain_at": null,
   "history": [
     {
-      "at": "2026-09-14T07:29:49.104440+00:00",
-      "action": "NO_ACTION",
-      "severity": "OK",
-      "streak": 0
-    },
-    {
       "at": "2026-09-15T07:06:57.747275+00:00",
       "action": "NO_ACTION",
       "severity": "OK",
@@ -299,6 +293,12 @@
     },
     {
       "at": "2026-11-02T08:46:43.231429+00:00",
+      "action": "NO_ACTION",
+      "severity": "OK",
+      "streak": 0
+    },
+    {
+      "at": "2026-11-03T08:56:50.361290+00:00",
       "action": "NO_ACTION",
       "severity": "OK",
       "streak": 0
